@@ -5,7 +5,6 @@ import (
 	"bufio"
 	"fmt"
 	"net"
-	"regexp"
 	"strings"
 
 	"github.com/MasterGunner/GoGoGunnerBot/utilities"
@@ -13,7 +12,7 @@ import (
 
 // IRCInterface does the...interface stuff for the IRC Connection? I still really don't quite understand what Interfaces are for.
 type IRCInterface interface {
-	StartupConfig(string, int, []string, string)
+	NewClient(string, int, []string, string, string)
 	Connect()
 	Join(string)
 	Leave(string)
@@ -28,36 +27,28 @@ type IRCInterface interface {
 type IRC struct {
 	connection *net.Conn
 	//connection *io.ReadWriter
-	server    string
-	port      int
-	channels  []string
-	nick      string
-	listeners []listener //Probably have to create a new Type/Struct for listeners, and then create an array of those here.
+	server      string
+	port        int
+	channels    []string
+	nick        string
+	commandChar string
+	listeners   []listener //Probably have to create a new Type/Struct for listeners, and then create an array of those here.
 }
 
-// StartupConfig configures the socket and initial recievers.
-func (i *IRC) StartupConfig(server string, port int, channels []string, nick string) {
-	//"constructor" operations
-	i.server = server
-	i.port = port
-	i.channels = channels
-	i.nick = nick
-
-	//Register listener for Ping/Pong.
-
-	//Register Other Listeners
-	i.AddListener(listener{
-		name:  "echo",
-		query: regexp.MustCompile(" PRIVMSG (.*) :}Echo (.*)"),
-		callback: func(i *IRC, info []string) {
-			i.Say(info[1], info[2])
-		},
-		helptext: "Echo Message",
-	})
+// NewClient creates and returns an IRC Client instance.
+func NewClient(server string, port int, channels []string, nick string, commandChar string) *IRC {
+	return &IRC{
+		server:      server,
+		port:        port,
+		channels:    channels,
+		nick:        nick,
+		commandChar: commandChar,
+	}
 }
 
 // Connect sets up the connection to the IRC server.
 func (i *IRC) Connect() {
+	//Establish basic connection
 	utilities.Log("Establishing Connection...")
 
 	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", i.server, i.port))
@@ -70,10 +61,13 @@ func (i *IRC) Connect() {
 	i.Send("NICK " + i.nick)
 	i.Send("USER " + i.nick + " 8 *:Golang IRC bot")
 
-	//Set socket listeners for connect and disconnect. <-Does GO even have these?
-	////Wait for connection to be established, and then send connection details.
-	////If channels are specified, join them after 3 seconds.
-	//On disconnect...
+	//Register Listeners (should probably do this before establishing connection)
+	RegisterListeners(i)
+
+	//Connect to provided channels
+	for j := 0; j < len(i.channels); j++ {
+		i.Join(i.channels[j])
+	}
 
 	//Loop to listen to Socket; call Handler function in new thread on new input
 	quit := false
@@ -90,13 +84,13 @@ func (i *IRC) Connect() {
 
 // Join an IRC Channel.
 func (i *IRC) Join(channel string) {
-	//IRC.Send('JOIN ' + channel) ?
+	i.Send("JOIN " + channel)
 	utilities.Log("JOINED CHANNEL - " + channel)
 }
 
 // Leave an IRC Channel
 func (i *IRC) Leave(channel string) {
-	//IRC.Send('JOIN ' + channel) ?
+	i.Send("PART " + channel)
 	utilities.Log("LEFT CHANNEL - " + channel)
 }
 
@@ -107,16 +101,26 @@ func (i *IRC) AddListener(l listener) {
 
 // RemoveListener remove listeners for incoming messages.
 func (i *IRC) RemoveListener(name string) {
-
+	//a = append(a[:i], a[i+1:]...)
+	for j := 0; j < len(i.listeners); j++ {
+		if i.listeners[j].name == name { //Find listener with matching name.
+			i.listeners = append(i.listeners[:j], i.listeners[j+1:]...) //Remove listener from list.
+			j = j - 1                                                   //Decrease counter to avoid skipping the next listener.
+		}
+	}
 }
 
 // Handle decides which listeners to pass incoming messages on to.
 func (i *IRC) Handle(message string) {
+	//Log Recieved Message
 	utilities.Log(fmt.Sprintf("RECV - %s", message))
+
+	//Repond to Ping/Pong queries from server.
 	if strings.Index(message, "PING ") == 0 {
 		i.Send(fmt.Sprintf("PONG %s", message[5:]))
 	}
 
+	//Loop through listener arrays and trigger any functions as appropriate.
 	for j := 0; j < len(i.listeners); j++ {
 		l := i.listeners[j]
 		info := l.query.FindStringSubmatch(message)
